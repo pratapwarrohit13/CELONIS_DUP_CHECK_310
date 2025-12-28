@@ -6,11 +6,32 @@ from pycelonis import get_celonis
 from config import ERP_CONFIG
 import logging
 
+from logging.handlers import RotatingFileHandler
+import sys
+
 # Configure logging
-logging.basicConfig(filename='main_debug.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+def setup_logging():
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+
+    # File Handler - Rotating (Max 5MB, keep 3 backups)
+    file_handler = RotatingFileHandler('app.log', maxBytes=5*1024*1024, backupCount=3)
+    file_handler.setFormatter(log_formatter)
+    file_handler.setLevel(logging.DEBUG) # Capture everything in file
+    root_logger.addHandler(file_handler)
+
+    # Console Handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_formatter)
+    console_handler.setLevel(logging.INFO) # Standard info for user
+    root_logger.addHandler(console_handler)
+
+    logging.info("Logging initialized.")
 
 # Load environment variables
 load_dotenv()
+setup_logging()
 
 def connect_to_celonis():
     """Establishes connection to Celonis."""
@@ -135,18 +156,6 @@ def get_data_from_tables(pool, table_names):
         logging.error("Failed to get Data Model.")
         return {}
         
-from pycelonis.pql import PQL, PQLColumn, PQLFilter
-
-# ... (Previous code) ...
-
-def get_data_from_tables(pool, table_names):
-    """Fetches data using a temporary Data Model and PQL."""
-    logging.info(f"Fetching data from tables: {table_names}")
-    dm = get_or_create_datamodel(pool, table_names)
-    if not dm:
-        logging.error("Failed to get Data Model.")
-        return {}
-        
     data_frames = {}
     for table_name in table_names:
         logging.info(f"Fetching data from table: {table_name}")
@@ -160,11 +169,26 @@ def get_data_from_tables(pool, table_names):
                 # Get columns to select *
                 cols = found_table.get_columns()
                 query = PQL()
-                for col in cols:
-                    # Construct PQL: "TABLE"."COLUMN"
-                    query += PQLColumn(name=col.name, query=f'"{found_table.name}"."{col.name}"')
                 
-                logging.info(f"Exporting DataFrame for {table_name} with {len(cols)} columns...")
+                selected_col_count = 0
+                for col in cols:
+                    # Optimization: Filter columns if required_columns is set
+                    if required_columns:
+                        if col.name not in required_columns and col.name != 'MANDT': # Always keep MANDT if present? Or stick to strict config
+                             # Check if config missed MANDT but it's crucial? Config usually has it.
+                             # Let's strictly follow required_columns if provided.
+                             pass
+                        else:
+                             if col.name in required_columns:
+                                 # Construct PQL: "TABLE"."COLUMN"
+                                 query += PQLColumn(name=col.name, query=f'"{found_table.name}"."{col.name}"')
+                                 selected_col_count += 1
+                    else:
+                        # No filter, fetch all
+                        query += PQLColumn(name=col.name, query=f'"{found_table.name}"."{col.name}"')
+                        selected_col_count += 1
+                
+                logging.info(f"Exporting DataFrame for {table_name} with {selected_col_count} columns...")
                 try:
                     df = dm.export_data_frame(query)
                     data_frames[table_name] = df
@@ -316,15 +340,25 @@ def main():
     system, process = select_erp_configuration()
     
     config = None
+    required_columns = None
+    
     if system and process:
         config = ERP_CONFIG[system][process]
         table_names = config['tables']
         print(f"Auto-selected tables for {system} {process}: {table_names}")
+        
+        # Optimize: Only fetch necessary columns
+        if 'join_keys' in config and 'duplicate_keys' in config:
+             required_columns = set(config['join_keys'] + config['duplicate_keys'])
+             # Maybe add some common ones like 'WAERS' (currency) if not implicitly included?
+             # For safety, let's just stick to the config. If duplicates logic needs 'WAERS', it should be in duplicate_keys.
+             print(f"Optimization: Fetching only required columns: {required_columns}")
+             
     else:
         table_names_input = input("Enter table names (comma separated): ")
         table_names = [name.strip() for name in table_names_input.split(",")]
     
-    data_frames = get_data_from_tables(pool, table_names)
+    data_frames = get_data_from_tables(pool, table_names, required_columns=required_columns)
     
     if not data_frames:
         print("No data fetched. Exiting.")
@@ -401,4 +435,9 @@ def main():
         print(f"Error appending data back to Celonis: {e}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logging.critical("Fatal error in application", exc_info=True)
+        print(f"Crucial Error: {e}")
+        input("Press Enter to exit...")
