@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Logs
+*.log
+*.txt
+
+# Celonis Data
+*.parquet
+*.csv
+*.xlsx
+
+# IDEs
+.vscode/
+.idea/
+
+# Local Utilities
+verify_logic.py
+setup_environment.py
